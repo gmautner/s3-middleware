@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,8 +11,9 @@ import (
 	"strings"
 )
 
-// verifySigV4 verifies the AWS SigV4 signature on a request.
-// Returns the access key on success.
+// verifySigV4 verifies an AWS Signature V4 signed request. If body is
+// provided and x-amz-content-sha256 is missing, the body hash is computed.
+// Otherwise the header value is used as the payload hash.
 func verifySigV4(r *http.Request, body []byte, db *DB) (string, error) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
@@ -20,23 +22,27 @@ func verifySigV4(r *http.Request, body []byte, db *DB) (string, error) {
 	if !strings.HasPrefix(authHeader, "AWS4-HMAC-SHA256 ") {
 		return "", fmt.Errorf("unsupported auth scheme")
 	}
-	authHeader = strings.TrimPrefix(authHeader, "AWS4-HMAC-SHA256 ")
 
-	// Parse fields — handle both ", " (AWS SDK) and "," (minio-go) separators
-	var parts []string
-	if strings.Contains(authHeader, ", ") {
-		parts = strings.SplitN(authHeader, ", ", 3)
-	} else {
-		parts = strings.SplitN(authHeader, ",", 3)
+	remainder := authHeader[len("AWS4-HMAC-SHA256 "):]
+	// AWS spec allows ", " or "," between Credential, SignedHeaders, Signature.
+	// The AWS SDK uses ", " but minio-go uses ",". Normalize to handle both.
+	parts := strings.Split(remainder, ", ")
+	if len(parts) != 3 {
+		parts = strings.Split(remainder, ",")
 	}
 	if len(parts) != 3 {
 		return "", fmt.Errorf("malformed Authorization header")
 	}
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
 
 	// Credential
-	credPart := strings.TrimPrefix(strings.TrimSpace(parts[0]), "Credential=")
-	credParts := strings.Split(credPart, "/")
-	if len(credParts) != 5 {
+	if !strings.HasPrefix(parts[0], "Credential=") {
+		return "", fmt.Errorf("missing Credential")
+	}
+	credParts := strings.Split(strings.TrimPrefix(parts[0], "Credential="), "/")
+	if len(credParts) != 5 || credParts[4] != "aws4_request" {
 		return "", fmt.Errorf("malformed credential scope")
 	}
 	accessKey := credParts[0]
@@ -45,13 +51,19 @@ func verifySigV4(r *http.Request, body []byte, db *DB) (string, error) {
 	service := credParts[3]
 
 	// SignedHeaders
-	signedHeadersStr := strings.TrimPrefix(strings.TrimSpace(parts[1]), "SignedHeaders=")
+	if !strings.HasPrefix(parts[1], "SignedHeaders=") {
+		return "", fmt.Errorf("missing SignedHeaders")
+	}
+	signedHeadersStr := strings.TrimPrefix(parts[1], "SignedHeaders=")
 	signedHeaders := strings.Split(signedHeadersStr, ";")
 
 	// Signature
-	providedSig := strings.TrimPrefix(strings.TrimSpace(parts[2]), "Signature=")
+	if !strings.HasPrefix(parts[2], "Signature=") {
+		return "", fmt.Errorf("missing Signature")
+	}
+	providedSig := strings.TrimPrefix(parts[2], "Signature=")
 
-	// Look up secret key from database
+	// Look up customer — DB instead of hardcoded map
 	account, err := db.GetAccountByAccessKey(accessKey)
 	if err != nil {
 		return "", fmt.Errorf("database error: %w", err)
@@ -61,60 +73,67 @@ func verifySigV4(r *http.Request, body []byte, db *DB) (string, error) {
 	}
 	secretKey := account.SecretKey
 
-	// Build canonical headers
-	var canonicalHeaders strings.Builder
+	// Canonical headers — for headers with multiple values (e.g.
+	// x-amz-object-attributes sent once per attribute by aws-sdk-go-v2),
+	// join all values with "," per the SigV4 spec.
+	var canonHeaders strings.Builder
 	for _, h := range signedHeaders {
-		h = strings.TrimSpace(h)
 		var val string
 		if h == "host" {
 			val = r.Host
 		} else {
-			vals := r.Header.Values(http.CanonicalHeaderKey(h))
-			if len(vals) > 1 {
-				val = strings.Join(vals, ",")
-			} else {
-				val = r.Header.Get(h)
+			vals := r.Header.Values(h)
+			for i := range vals {
+				vals[i] = strings.TrimSpace(vals[i])
 			}
+			val = strings.Join(vals, ",")
 		}
-		canonicalHeaders.WriteString(h + ":" + val + "\n")
+		canonHeaders.WriteString(h)
+		canonHeaders.WriteByte(':')
+		canonHeaders.WriteString(val)
+		canonHeaders.WriteByte('\n')
 	}
 
-	// Payload hash
+	// Payload hash: use x-amz-content-sha256 if the client declared it.
+	// For UNSIGNED-PAYLOAD or STREAMING-*, the literal string is used.
+	// If the header is missing, compute from the buffered body.
 	payloadHash := r.Header.Get("X-Amz-Content-Sha256")
 	if payloadHash == "" {
 		payloadHash = sha256Hex(body)
-	} else if payloadHash == "UNSIGNED-PAYLOAD" || strings.HasPrefix(payloadHash, "STREAMING-") {
-		// Use as-is
 	}
 
-	// Canonical request
-	canonicalReq := strings.Join([]string{
+	// Canonical request — use EscapedPath() which returns the encoded path
+	// matching what the client signed over. It uses RawPath when valid,
+	// or re-encodes Path correctly (handling literal % etc.)
+	canonicalRequest := strings.Join([]string{
 		r.Method,
-		r.URL.EscapedPath(),
+		canonicalURIEscaped(r.URL.EscapedPath()),
 		canonicalQueryString(r.URL.RawQuery),
-		canonicalHeaders.String(),
+		canonHeaders.String(),
 		signedHeadersStr,
 		payloadHash,
 	}, "\n")
 
 	// String to sign
 	amzDate := r.Header.Get("X-Amz-Date")
+	if amzDate == "" {
+		return "", fmt.Errorf("missing X-Amz-Date")
+	}
 	scope := fmt.Sprintf("%s/%s/%s/aws4_request", date, region, service)
 	stringToSign := strings.Join([]string{
 		"AWS4-HMAC-SHA256",
 		amzDate,
 		scope,
-		sha256Hex([]byte(canonicalReq)),
+		sha256Hex([]byte(canonicalRequest)),
 	}, "\n")
 
-	// Derive signing key and compute signature
+	// Verify
 	signingKey := deriveSigningKey(secretKey, date, region, service)
-	computedSig := fmt.Sprintf("%x", hmacSHA256(signingKey, []byte(stringToSign)))
+	expectedSig := hex.EncodeToString(hmacSHA256(signingKey, []byte(stringToSign)))
 
-	if computedSig != providedSig {
+	if expectedSig != providedSig {
 		return "", fmt.Errorf("signature mismatch")
 	}
-
 	return accessKey, nil
 }
 
@@ -132,8 +151,23 @@ func hmacSHA256(key, data []byte) []byte {
 }
 
 func sha256Hex(data []byte) string {
-	h := sha256.Sum256(data)
-	return fmt.Sprintf("%x", h[:])
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// canonicalURIEscaped takes the already-escaped path from url.EscapedPath()
+// and returns it as-is (it's already in canonical form).
+func canonicalURIEscaped(path string) string {
+	if path == "" || path == "/" {
+		return "/"
+	}
+	return path
+}
+
+// awsQueryEscape encodes a string per AWS Sig V4 rules: RFC 3986 with
+// space as %20 (not + like url.QueryEscape).
+func awsQueryEscape(s string) string {
+	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }
 
 func canonicalQueryString(rawQuery string) string {
@@ -146,18 +180,12 @@ func canonicalQueryString(rawQuery string) string {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-
 	var parts []string
 	for _, k := range keys {
-		vals := params[k]
-		sort.Strings(vals)
-		for _, v := range vals {
+		sort.Strings(params[k])
+		for _, v := range params[k] {
 			parts = append(parts, awsQueryEscape(k)+"="+awsQueryEscape(v))
 		}
 	}
 	return strings.Join(parts, "&")
-}
-
-func awsQueryEscape(s string) string {
-	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }
