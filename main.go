@@ -63,7 +63,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		adminHandler := newAdminHandler(db, awsCfg, adminAPIKey, adminAllowedIPs)
+		adminHandler := newAdminHandler(db, awsCfg, cache, adminAPIKey, adminAllowedIPs)
 		log.Printf("Admin API listening on %s", adminListen)
 		if err := http.ListenAndServe(adminListen, adminHandler); err != nil {
 			log.Fatalf("Admin server error: %v", err)

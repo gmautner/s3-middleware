@@ -130,58 +130,12 @@ func buildSessionPolicy(buckets []string) string {
 
 	resourceStr := "[]"
 	if len(resources) > 0 {
-		resourceStr = "[" + strings.Join(resources, ", ") + "]"
+		resourceStr = "[" + strings.Join(resources, ",") + "]"
 	}
 
-	return fmt.Sprintf(`{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "AllowObjectOperations",
-      "Effect": "Allow",
-      "Action": [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject",
-        "s3:ListBucket",
-        "s3:GetBucketLocation",
-        "s3:ListBucketMultipartUploads",
-        "s3:ListMultipartUploadParts",
-        "s3:AbortMultipartUpload",
-        "s3:PutObjectAcl",
-        "s3:GetObjectAcl",
-        "s3:GetObjectVersion",
-        "s3:DeleteObjectVersion",
-        "s3:PutObjectTagging",
-        "s3:GetObjectTagging",
-        "s3:DeleteObjectTagging"
-      ],
-      "Resource": %s
-    },
-    {
-      "Sid": "DenyBucketAdmin",
-      "Effect": "Deny",
-      "Action": [
-        "s3:ListAllMyBuckets",
-        "s3:CreateBucket",
-        "s3:DeleteBucket",
-        "s3:PutBucketVersioning",
-        "s3:PutEncryptionConfiguration",
-        "s3:DeleteEncryptionConfiguration",
-        "s3:PutBucketPolicy",
-        "s3:DeleteBucketPolicy",
-        "s3:PutBucketAcl",
-        "s3:PutBucketOwnershipControls",
-        "s3:PutPublicAccessBlock",
-        "s3:DeletePublicAccessBlock",
-        "s3:PutObjectLockConfiguration",
-        "s3:PutBucketTagging",
-        "s3:DeleteBucketTagging"
-      ],
-      "Resource": "arn:aws:s3:::*"
-    }
-  ]
-}`, resourceStr)
+	policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":%s},{"Effect":"Deny","Action":["s3:CreateBucket","s3:DeleteBucket","s3:PutBucketVersioning","s3:PutBucketPolicy","s3:DeleteBucketPolicy","s3:PutBucketAcl","s3:PutBucketOwnershipControls","s3:PutBucketTagging","s3:DeleteBucketTagging","s3:ListAllMyBuckets","s3:PutEncryptionConfiguration","s3:DeleteEncryptionConfiguration","s3:PutPublicAccessBlock","s3:DeletePublicAccessBlock","s3:PutObjectLockConfiguration"],"Resource":"arn:aws:s3:::*"}]}`, resourceStr)
+	log.Printf("  [policy] size=%d bytes, buckets=%d", len(policy), len(buckets))
+	return policy
 }
 
 // getOrAssumeRole gets cached STS credentials or calls AssumeRole.

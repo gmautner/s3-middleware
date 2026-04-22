@@ -20,15 +20,17 @@ import (
 type adminHandler struct {
 	db         *DB
 	awsCfg     *AWSConfig
+	cache      *CredCache
 	apiKey     string
 	allowedIPs map[string]bool
 	mux        *http.ServeMux
 }
 
-func newAdminHandler(db *DB, awsCfg *AWSConfig, apiKey, allowedIPs string) http.Handler {
+func newAdminHandler(db *DB, awsCfg *AWSConfig, cache *CredCache, apiKey, allowedIPs string) http.Handler {
 	h := &adminHandler{
 		db:         db,
 		awsCfg:     awsCfg,
+		cache:      cache,
 		apiKey:     apiKey,
 		allowedIPs: parseAllowedIPs(allowedIPs),
 	}
@@ -251,6 +253,9 @@ func (h *adminHandler) handleBuckets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Invalidate credential cache so session policy includes the new bucket
+	h.cache.invalidate(account.AccessKey)
+
 	log.Printf("Created bucket %s for account %s", req.Name, req.AccountID)
 	jsonResp(w, http.StatusCreated, map[string]string{
 		"name":       req.Name,
@@ -307,8 +312,18 @@ func (h *adminHandler) handleBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Look up owner account for cache invalidation before deleting from DB
+	ownerID, _ := h.db.GetBucketAccount(bucketName)
+
 	if err := h.db.DeleteBucket(bucketName); err != nil {
 		log.Printf("WARNING: bucket %s deleted from S3 but DB removal failed: %v", bucketName, err)
+	}
+
+	// Invalidate credential cache for the bucket's owner
+	if ownerID != "" {
+		if account, err := h.db.GetAccount(ownerID); err == nil && account != nil {
+			h.cache.invalidate(account.AccessKey)
+		}
 	}
 
 	log.Printf("Deleted bucket %s", bucketName)

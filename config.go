@@ -50,3 +50,9 @@ func (c *CredCache) set(accessKey string, creds aws.Credentials, expiration time
 		expiration: expiration,
 	}
 }
+
+func (c *CredCache) invalidate(accessKey string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, accessKey)
+}
