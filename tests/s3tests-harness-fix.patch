@@ -1,0 +1,45 @@
+diff --git a/s3tests/functional/__init__.py b/s3tests/functional/__init__.py
+index fbea948..47adb32 100644
+--- a/s3tests/functional/__init__.py
++++ b/s3tests/functional/__init__.py
+@@ -95,15 +95,26 @@ def list_versions(client, bucket, batch_size):
+         if len(objs):
+             yield [{'Key': o['Key'], 'VersionId': o['VersionId']} for o in objs]
+ 
++def _delete_objects_safe(client, bucket, objects):
++    """Delete objects, falling back to without BypassGovernanceRetention
++    if the bucket doesn't have Object Lock enabled."""
++    try:
++        return client.delete_objects(Bucket=bucket,
++                Delete={'Objects': objects, 'Quiet': True},
++                BypassGovernanceRetention=True)
++    except ClientError as e:
++        if 'InvalidArgument' in str(e) or 'NotImplemented' in str(e):
++            return client.delete_objects(Bucket=bucket,
++                    Delete={'Objects': objects, 'Quiet': True})
++        raise
++
+ def nuke_bucket(client, bucket):
+     batch_size = 128
+     max_retain_date = None
+ 
+     # list and delete objects in batches
+     for objects in list_versions(client, bucket, batch_size):
+-        delete = client.delete_objects(Bucket=bucket,
+-                Delete={'Objects': objects, 'Quiet': True},
+-                BypassGovernanceRetention=True)
++        delete = _delete_objects_safe(client, bucket, objects)
+ 
+         # check for object locks on 403 AccessDenied errors
+         for err in delete.get('Errors', []):
+@@ -132,9 +143,7 @@ bucket cleanup'.format(bucket, delta.total_seconds()))
+             time.sleep(delta.total_seconds())
+ 
+         for objects in list_versions(client, bucket, batch_size):
+-            client.delete_objects(Bucket=bucket,
+-                    Delete={'Objects': objects, 'Quiet': True},
+-                    BypassGovernanceRetention=True)
++            _delete_objects_safe(client, bucket, objects)
+ 
+     client.delete_bucket(Bucket=bucket)
+ 

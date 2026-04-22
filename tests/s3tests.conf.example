@@ -1,0 +1,63 @@
+# s3tests.conf — Ceph s3-tests configuration for S3 middleware
+#
+# Copy this file to ~/s3-tests/s3tests.conf and fill in the values.
+# Credentials come from the middleware's Postgres database (accounts table).
+# Account IDs are the CloudStack account UUIDs used when creating users
+# via POST /admin/users.
+
+[DEFAULT]
+host = localhost
+port = 9090
+is_secure = False
+ssl_verify = False
+
+[fixtures]
+bucket prefix = t{random}-
+
+[s3 main]
+display_name = main
+user_id = main
+email = main@test.com
+access_key = <main account access_key from middleware DB>
+secret_key = <main account secret_key from middleware DB>
+
+[s3 alt]
+display_name = alt
+user_id = alt
+email = alt@test.com
+access_key = <alt account access_key from middleware DB>
+secret_key = <alt account secret_key from middleware DB>
+
+[s3 tenant]
+display_name = tenant
+user_id = tenant
+email = tenant@test.com
+access_key = <tenant account access_key from middleware DB>
+secret_key = <tenant account secret_key from middleware DB>
+tenant = testx
+
+[iam]
+access_key = <same as main>
+secret_key = <same as main>
+display_name = main
+user_id = main
+email = main@test.com
+
+[iam root]
+access_key = <same as main>
+secret_key = <same as main>
+user_id = main
+email = main@test.com
+
+[iam alt root]
+access_key = <same as alt>
+secret_key = <same as alt>
+user_id = alt
+email = alt@test.com
+
+[s3 middleware]
+admin_url = http://localhost:8090
+admin_api_key = <ADMIN_API_KEY value from middleware config>
+main_account_id = <CloudStack UUID for main account>
+alt_account_id = <CloudStack UUID for alt account>
+tenant_account_id = <CloudStack UUID for tenant account>

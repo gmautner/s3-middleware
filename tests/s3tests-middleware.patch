@@ -1,0 +1,135 @@
+--- s3tests/functional/__init__.py	2026-04-22 11:44:20
++++ /tmp/init_mw_final.py	2026-04-22 11:44:19
+@@ -14,12 +14,51 @@
+ import itertools
+ import urllib3
+ import re
++import json
++import urllib.request
++import urllib.error
+ 
+ config = munch.Munch
+ 
+ # this will be assigned by setup()
+ prefix = None
+ 
++# Middleware mode: redirect bucket create/delete through admin API
++_middleware_account_map = {}         # access_key -> account_id
++_middleware_created_buckets = {}     # bucket_name -> access_key (track ownership)
++
++def _middleware_create_bucket(name, account_id):
++    """Create bucket via S3 middleware admin API."""
++    data = json.dumps({"name": name, "account_id": account_id}).encode()
++    req = urllib.request.Request(
++        config.middleware_admin_url + '/admin/buckets',
++        data=data, method='POST',
++        headers={'Authorization': 'Bearer ' + config.middleware_admin_api_key,
++                 'Content-Type': 'application/json'})
++    try:
++        urllib.request.urlopen(req)
++    except urllib.error.HTTPError as e:
++        body = e.read().decode()
++        raise RuntimeError('middleware create bucket %s failed (%d): %s' % (name, e.code, body))
++    _middleware_created_buckets[name] = account_id
++
++def _middleware_delete_bucket(name):
++    """Delete bucket via S3 middleware admin API."""
++    req = urllib.request.Request(
++        config.middleware_admin_url + '/admin/buckets/' + name,
++        method='DELETE',
++        headers={'Authorization': 'Bearer ' + config.middleware_admin_api_key})
++    try:
++        urllib.request.urlopen(req)
++    except urllib.error.HTTPError:
++        pass
++    _middleware_created_buckets.pop(name, None)
++
++def _middleware_get_account_id(client):
++    """Map boto3 client credentials to middleware account_id."""
++    ak = client._request_signer._credentials.access_key
++    return _middleware_account_map.get(ak, config.middleware_main_account_id)
++
+ def get_prefix():
+     assert prefix is not None
+     return prefix
+@@ -49,10 +88,17 @@
+         )
+ 
+ def get_buckets_list(client=None, prefix=None):
+-    if client == None:
+-        client = get_client()
+     if prefix == None:
+         prefix = get_prefix()
++    if getattr(config, 'middleware_mode', False):
++        if client is not None:
++            account_id = _middleware_get_account_id(client)
++        else:
++            account_id = config.middleware_main_account_id
++        return [b for b, aid in _middleware_created_buckets.items()
++                if prefix in b and aid == account_id]
++    if client == None:
++        client = get_client()
+     response = client.list_buckets()
+     bucket_dicts = response['Buckets']
+     buckets_list = []
+@@ -145,7 +191,10 @@
+         for objects in list_versions(client, bucket, batch_size):
+             _delete_objects_safe(client, bucket, objects)
+ 
+-    client.delete_bucket(Bucket=bucket)
++    if getattr(config, 'middleware_mode', False):
++        _middleware_delete_bucket(bucket)
++    else:
++        client.delete_bucket(Bucket=bucket)
+ 
+ def nuke_prefixed_buckets(prefix, client=None):
+     if client == None:
+@@ -309,6 +358,19 @@
+     else:
+         config.cloud_storage_class = None
+ 
++    # S3 middleware mode: redirect bucket create/delete through admin API
++    config.middleware_mode = False
++    if cfg.has_section('s3 middleware'):
++        config.middleware_mode = True
++        config.middleware_admin_url = cfg.get('s3 middleware', 'admin_url')
++        config.middleware_admin_api_key = cfg.get('s3 middleware', 'admin_api_key')
++        config.middleware_main_account_id = cfg.get('s3 middleware', 'main_account_id')
++        config.middleware_alt_account_id = cfg.get('s3 middleware', 'alt_account_id')
++        config.middleware_tenant_account_id = cfg.get('s3 middleware', 'tenant_account_id')
++        _middleware_account_map[config.main_access_key] = config.middleware_main_account_id
++        _middleware_account_map[config.alt_access_key] = config.middleware_alt_account_id
++        _middleware_account_map[config.tenant_access_key] = config.middleware_tenant_account_id
++
+ def setup():
+     alt_client = get_alt_client()
+     tenant_client = get_tenant_client()
+@@ -649,9 +711,12 @@
+                         verify=config.default_ssl_verify)
+     if name is None:
+         name = get_new_bucket_name()
+-    bucket = s3.Bucket(name)
+-    bucket_location = bucket.create()
+-    return bucket
++    if getattr(config, 'middleware_mode', False):
++        _middleware_create_bucket(name, config.middleware_main_account_id)
++    else:
++        bucket = s3.Bucket(name)
++        bucket.create()
++    return s3.Bucket(name)
+ 
+ def get_new_bucket(client=None, name=None):
+     """
+@@ -665,7 +730,11 @@
+     if name is None:
+         name = get_new_bucket_name()
+ 
+-    client.create_bucket(Bucket=name)
++    if getattr(config, 'middleware_mode', False):
++        account_id = _middleware_get_account_id(client)
++        _middleware_create_bucket(name, account_id)
++    else:
++        client.create_bucket(Bucket=name)
+     return name
+ 
+ def get_parameter_name():
