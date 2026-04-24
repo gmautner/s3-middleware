@@ -108,13 +108,14 @@ git apply /path/to/s3-middleware/tests/s3tests-middleware.patch
 
 For Mint, re-run `setup-tests.sh` — it resets and rebuilds all suites.
 
-## Session Policy Size Limit
+## Bucket Naming for Tests
 
-AWS STS session policies have a 2048-byte packed size limit. The
-middleware's compact policy (`"Action": "s3:*"` with explicit Deny)
-supports ~20 buckets per account. Tests that create many buckets in a
-single account may hit this limit. The minio-go runner includes a
-background DB cleaner to manage this.
+The middleware requires bucket names to start with the account name
+(see [main README](../README.md#bucket-naming-convention)). Test suites
+use their own prefixes (e.g., `s3proxy-mint-`, `minio-go-test-`), so
+the test account name must be compatible. The setup script and middleware
+adapter handle this by creating buckets via the admin API, which
+validates the prefix.
 
 ## Files
 

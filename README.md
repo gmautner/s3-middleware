@@ -317,3 +317,9 @@ coordination is required.
 
 See [tests/README.md](tests/README.md) for S3 compatibility testing
 with Ceph s3-tests and MinIO Mint suites.
+
+## Related Documentation
+
+- **[CloudStack Plugin README](https://github.com/gmautner/cloudstack/blob/feature/aws-s3-object-storage-provider/plugins/storage/object/s3/README.md)** — AWS prerequisites (IAM user, role, policies), CloudStack UI configuration, client access modes, known issues.
+- **[Product Requirements Document](https://github.com/gmautner/cloudstack/blob/feature/aws-s3-object-storage-provider/docs/PRD-aws-s3-object-storage-provider.md)** — Full architecture design, credential model, session policy rationale, implementation phases.
+- **[Compatibility Tests](tests/README.md)** — Test setup, scripts, baseline results, failure classification.
