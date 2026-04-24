@@ -88,10 +88,11 @@ func (h *adminHandler) handleUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ID string `json:"id"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
-		jsonError(w, "invalid request: id is required", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" || req.Name == "" {
+		jsonError(w, "invalid request: id and name are required", http.StatusBadRequest)
 		return
 	}
 
@@ -110,13 +111,14 @@ func (h *adminHandler) handleUsers(w http.ResponseWriter, r *http.Request) {
 	accessKey := generateAccessKey()
 	secretKey := generateSecretKey()
 
-	if err := h.db.CreateAccount(req.ID, accessKey, secretKey); err != nil {
+	if err := h.db.CreateAccount(req.ID, req.Name, accessKey, secretKey); err != nil {
 		jsonError(w, "failed to create account: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	jsonResp(w, http.StatusCreated, &Account{
 		ID:        req.ID,
+		Name:      req.Name,
 		AccessKey: accessKey,
 		SecretKey: secretKey,
 	})
@@ -180,6 +182,12 @@ func (h *adminHandler) handleBuckets(w http.ResponseWriter, r *http.Request) {
 	}
 	if account == nil {
 		jsonError(w, "account not found: "+req.AccountID, http.StatusNotFound)
+		return
+	}
+
+	// Validate bucket name starts with account name
+	if account.Name != "" && !strings.HasPrefix(req.Name, account.Name) {
+		jsonError(w, fmt.Sprintf("bucket name must start with account name '%s'", account.Name), http.StatusBadRequest)
 		return
 	}
 

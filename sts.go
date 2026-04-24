@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -63,14 +62,8 @@ func (h *stsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	buckets, err := h.db.ListBucketsByAccount(account.ID)
-	if err != nil {
-		stsError(w, "Receiver", "InternalError", "Failed to list buckets", 500)
-		return
-	}
-
-	// Build session policy
-	sessionPolicy := buildSessionPolicy(buckets)
+	// Build session policy scoped to the account name prefix
+	sessionPolicy := buildSessionPolicy(account.Name)
 
 	// Call AWS STS AssumeRole
 	stsClient := sts.New(sts.Options{
@@ -119,62 +112,16 @@ func (h *stsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	enc.Encode(resp)
 }
 
-// buildSessionPolicy creates a session policy scoped to the given buckets.
-// Uses the Deny list from the PRD (section 5.6).
-func buildSessionPolicy(buckets []string) string {
-	var resources []string
-	for _, b := range buckets {
-		resources = append(resources, fmt.Sprintf(`"arn:aws:s3:::%s"`, b))
-		resources = append(resources, fmt.Sprintf(`"arn:aws:s3:::%s/*"`, b))
+// buildSessionPolicy creates a session policy scoped to buckets whose names
+// start with the account name prefix. This keeps the policy size constant
+// regardless of how many buckets the account has.
+func buildSessionPolicy(accountName string) string {
+	resourceStr := `["arn:aws:s3:::*","arn:aws:s3:::*/*"]`
+	if accountName != "" {
+		resourceStr = fmt.Sprintf(`["arn:aws:s3:::%s*","arn:aws:s3:::%s*/*"]`, accountName, accountName)
 	}
 
-	resourceStr := "[]"
-	if len(resources) > 0 {
-		resourceStr = "[" + strings.Join(resources, ",") + "]"
-	}
-
-	policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":%s},{"Effect":"Deny","Action":["s3:CreateBucket","s3:DeleteBucket","s3:PutBucketVersioning","s3:PutBucketPolicy","s3:DeleteBucketPolicy","s3:PutBucketAcl","s3:PutBucketOwnershipControls","s3:PutBucketTagging","s3:DeleteBucketTagging","s3:ListAllMyBuckets","s3:PutEncryptionConfiguration","s3:DeleteEncryptionConfiguration","s3:PutPublicAccessBlock","s3:DeletePublicAccessBlock","s3:PutObjectLockConfiguration"],"Resource":"arn:aws:s3:::*"}]}`, resourceStr)
-	log.Printf("  [policy] size=%d bytes, buckets=%d", len(policy), len(buckets))
-	return policy
-}
-
-// getOrAssumeRole gets cached STS credentials or calls AssumeRole.
-// Used by the S3 proxy.
-func (h *stsHandler) getOrAssumeRole(accessKey string, accountID string) (aws.Credentials, error) {
-	if cached, ok := h.cache.get(accessKey); ok {
-		return cached.creds, nil
-	}
-
-	buckets, err := h.db.ListBucketsByAccount(accountID)
-	if err != nil {
-		return aws.Credentials{}, fmt.Errorf("list buckets: %w", err)
-	}
-
-	sessionPolicy := buildSessionPolicy(buckets)
-
-	stsClient := sts.New(sts.Options{
-		Region:      h.awsCfg.Region,
-		Credentials: credentials.NewStaticCredentialsProvider(h.awsCfg.AccessKey, h.awsCfg.SecretKey, ""),
-	})
-
-	result, err := stsClient.AssumeRole(context.Background(), &sts.AssumeRoleInput{
-		RoleArn:         aws.String(h.awsCfg.RoleARN),
-		RoleSessionName: aws.String(fmt.Sprintf("s3mw-%s-%d", accessKey[:10], time.Now().Unix())),
-		Policy:          aws.String(sessionPolicy),
-		DurationSeconds: aws.Int32(3600),
-	})
-	if err != nil {
-		return aws.Credentials{}, fmt.Errorf("assume role: %w", err)
-	}
-
-	c := result.Credentials
-	creds := aws.Credentials{
-		AccessKeyID:     *c.AccessKeyId,
-		SecretAccessKey: *c.SecretAccessKey,
-		SessionToken:    *c.SessionToken,
-	}
-	h.cache.set(accessKey, creds, *c.Expiration)
-	return creds, nil
+	return fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":%s},{"Effect":"Deny","Action":["s3:CreateBucket","s3:DeleteBucket","s3:PutBucketVersioning","s3:PutBucketPolicy","s3:DeleteBucketPolicy","s3:PutBucketAcl","s3:PutBucketOwnershipControls","s3:PutBucketTagging","s3:DeleteBucketTagging","s3:ListAllMyBuckets","s3:PutEncryptionConfiguration","s3:DeleteEncryptionConfiguration","s3:PutPublicAccessBlock","s3:DeletePublicAccessBlock","s3:PutObjectLockConfiguration"],"Resource":"arn:aws:s3:::*"}]}`, resourceStr)
 }
 
 // XML types for STS responses

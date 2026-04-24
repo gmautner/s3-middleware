@@ -49,12 +49,7 @@ func (h *s3ProxyHandler) getScopedCreds(ctx context.Context, accessKey string) (
 		return aws.Credentials{}, fmt.Errorf("account not found for key: %s", accessKey)
 	}
 
-	buckets, err := h.db.ListBucketsByAccount(account.ID)
-	if err != nil {
-		return aws.Credentials{}, fmt.Errorf("list buckets: %w", err)
-	}
-
-	sessionPolicy := buildSessionPolicy(buckets)
+	sessionPolicy := buildSessionPolicy(account.Name)
 
 	stsClient := stssvc.New(stssvc.Options{
 		Region:      h.awsCfg.Region,
@@ -77,8 +72,8 @@ func (h *s3ProxyHandler) getScopedCreds(ctx context.Context, accessKey string) (
 	}
 	h.cache.set(accessKey, scopedCreds, *result.Credentials.Expiration)
 
-	log.Printf("  [cache] issued scoped creds for %s (expires %s, buckets: %v)",
-		accessKey[:min(10, len(accessKey))], result.Credentials.Expiration.Format(time.RFC3339), buckets)
+	log.Printf("  [cache] issued scoped creds for %s (expires %s, prefix: %s*)",
+		accessKey[:min(10, len(accessKey))], result.Credentials.Expiration.Format(time.RFC3339), account.Name)
 
 	return scopedCreds, nil
 }

@@ -10,6 +10,7 @@ import (
 const schema = `
 CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
     access_key TEXT UNIQUE NOT NULL,
     secret_key TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -48,15 +49,16 @@ func initDB(databaseURL string) (*DB, error) {
 // Account represents a registered account.
 type Account struct {
 	ID        string `json:"id"`
+	Name      string `json:"name"`
 	AccessKey string `json:"access_key"`
 	SecretKey string `json:"secret_key"`
 }
 
 // CreateAccount inserts a new account.
-func (db *DB) CreateAccount(id, accessKey, secretKey string) error {
+func (db *DB) CreateAccount(id, name, accessKey, secretKey string) error {
 	_, err := db.Exec(
-		"INSERT INTO accounts (id, access_key, secret_key) VALUES ($1, $2, $3)",
-		id, accessKey, secretKey,
+		"INSERT INTO accounts (id, name, access_key, secret_key) VALUES ($1, $2, $3, $4)",
+		id, name, accessKey, secretKey,
 	)
 	return err
 }
@@ -65,8 +67,8 @@ func (db *DB) CreateAccount(id, accessKey, secretKey string) error {
 func (db *DB) GetAccount(id string) (*Account, error) {
 	var a Account
 	err := db.QueryRow(
-		"SELECT id, access_key, secret_key FROM accounts WHERE id = $1", id,
-	).Scan(&a.ID, &a.AccessKey, &a.SecretKey)
+		"SELECT id, name, access_key, secret_key FROM accounts WHERE id = $1", id,
+	).Scan(&a.ID, &a.Name, &a.AccessKey, &a.SecretKey)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -77,8 +79,8 @@ func (db *DB) GetAccount(id string) (*Account, error) {
 func (db *DB) GetAccountByAccessKey(accessKey string) (*Account, error) {
 	var a Account
 	err := db.QueryRow(
-		"SELECT id, access_key, secret_key FROM accounts WHERE access_key = $1", accessKey,
-	).Scan(&a.ID, &a.AccessKey, &a.SecretKey)
+		"SELECT id, name, access_key, secret_key FROM accounts WHERE access_key = $1", accessKey,
+	).Scan(&a.ID, &a.Name, &a.AccessKey, &a.SecretKey)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
